@@ -17,12 +17,18 @@ interface PreferencesPageProps {
 interface GeneralSettings {
   saveDir: string;
   copyToClipboard: boolean;
+  copyOcrToClipboard: boolean;
+  copyVideoToClipboard: boolean;
+  showTrimmerAfterRecording: boolean;
 }
 
 export function PreferencesPage({ onBack, onSettingsChange }: PreferencesPageProps) {
   const [settings, setSettings] = useState<GeneralSettings>({
     saveDir: "",
     copyToClipboard: true,
+    copyOcrToClipboard: true,
+    copyVideoToClipboard: true,
+    showTrimmerAfterRecording: true,
   });
   const [isLoading, setIsLoading] = useState(true);
 
@@ -34,10 +40,16 @@ export function PreferencesPage({ onBack, onSettingsChange }: PreferencesPagePro
         
         const copyToClip = await store.get<boolean>("copyToClipboard");
         const saveDir = await store.get<string>("saveDir");
-        
+        const copyOcrToClip = await store.get<boolean>("copyOcrToClipboard");
+        const copyVideoToClip = await store.get<boolean>("copyVideoToClipboard");
+        const showTrimmer = await store.get<boolean>("showTrimmerAfterRecording");
+
         setSettings({
           saveDir: saveDir || "",
           copyToClipboard: copyToClip ?? true,
+          copyOcrToClipboard: copyOcrToClip ?? true,
+          copyVideoToClipboard: copyVideoToClip ?? true,
+          showTrimmerAfterRecording: showTrimmer ?? true,
         });
       } catch (err) {
         console.error("Failed to load settings:", err);
@@ -144,6 +156,56 @@ export function PreferencesPage({ onBack, onSettingsChange }: PreferencesPagePro
                 id="copy-clipboard"
                 checked={settings.copyToClipboard}
                 onCheckedChange={(checked) => updateSetting("copyToClipboard", checked)}
+              />
+            </div>
+
+            {/* Copy OCR to Clipboard */}
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <label htmlFor="copy-ocr-clipboard" className="text-sm font-medium text-foreground cursor-pointer block">
+                  Auto-copy OCR text
+                </label>
+                <p className="text-xs text-foreground0">Automatically copy recognized text to clipboard after OCR</p>
+              </div>
+              <Switch
+                id="copy-ocr-clipboard"
+                checked={settings.copyOcrToClipboard}
+                onCheckedChange={(checked) => updateSetting("copyOcrToClipboard", checked)}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Recording Settings */}
+        <Card className="bg-card border-border">
+          <CardHeader className="pb-4">
+            <CardTitle className="text-lg font-semibold text-card-foreground">Recording</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <label htmlFor="copy-video-clipboard" className="text-sm font-medium text-foreground cursor-pointer block">
+                  Copy video to clipboard
+                </label>
+                <p className="text-xs text-foreground0">Automatically copy video file to clipboard after saving</p>
+              </div>
+              <Switch
+                id="copy-video-clipboard"
+                checked={settings.copyVideoToClipboard}
+                onCheckedChange={(checked) => updateSetting("copyVideoToClipboard", checked)}
+              />
+            </div>
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <label htmlFor="show-trimmer" className="text-sm font-medium text-foreground cursor-pointer block">
+                  Show trimmer after recording
+                </label>
+                <p className="text-xs text-foreground0">Open the video trimmer to edit before saving</p>
+              </div>
+              <Switch
+                id="show-trimmer"
+                checked={settings.showTrimmerAfterRecording}
+                onCheckedChange={(checked) => updateSetting("showTrimmerAfterRecording", checked)}
               />
             </div>
           </CardContent>

@@ -25,6 +25,28 @@ pub fn copy_image_to_clipboard(image_path: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Copy a file reference to the clipboard using macOS Finder-compatible format
+/// This allows pasting the file in Finder, Slack, etc.
+pub fn copy_file_to_clipboard(file_path: &str) -> AppResult<()> {
+    let script = format!(
+        r#"tell application "Finder" to set the clipboard to (POSIX file "{}")"#,
+        file_path
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to execute osascript: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to copy file to clipboard: {}", stderr));
+    }
+
+    Ok(())
+}
+
 /// Copy text to the system clipboard using macOS native APIs
 pub fn copy_text_to_clipboard(text: &str) -> AppResult<()> {
     let escaped_text = text.replace('"', "\\\"");

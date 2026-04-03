@@ -1,5 +1,6 @@
 //! Screenshot capture module
 
+use image::imageops::FilterType;
 use serde::Serialize;
 use std::path::PathBuf;
 use xcap::Monitor;
@@ -45,20 +46,6 @@ fn capture_single_monitor(monitor: &Monitor, save_path: &PathBuf) -> AppResult<M
         .id()
         .map_err(|e| format!("Failed to get monitor id: {}", e))?;
 
-    // Capture the screenshot
-    let image = monitor
-        .capture_image()
-        .map_err(|e| format!("Failed to capture monitor {}: {}", monitor_id, e))?;
-
-    // Generate unique filename
-    let filename = generate_filename_with_id("monitor", monitor_id, "png")?;
-    let screenshot_path = save_path.join(&filename);
-
-    // Save the image
-    image
-        .save(&screenshot_path)
-        .map_err(|e| format!("Failed to save screenshot: {}", e))?;
-
     // Get monitor geometry
     let x = monitor
         .x()
@@ -75,6 +62,33 @@ fn capture_single_monitor(monitor: &Monitor, save_path: &PathBuf) -> AppResult<M
     let scale_factor = monitor
         .scale_factor()
         .map_err(|e| format!("Failed to get monitor scale factor: {}", e))?;
+
+    // Capture the screenshot at full physical resolution
+    let image = monitor
+        .capture_image()
+        .map_err(|e| format!("Failed to capture monitor {}: {}", monitor_id, e))?;
+
+    // Downsample to logical resolution so JPEG encoding is fast.
+    // xcap width()/height() are logical pixels (CGDisplayBounds); capture_image() is
+    // physical pixels (2× on Retina). Full Retina PNG encoding takes 2-3 s; JPEG at
+    // logical resolution takes ~100 ms.
+    let downsampled = if scale_factor > 1.0 {
+        image::DynamicImage::ImageRgba8(image::imageops::resize(
+            &image,
+            width,
+            height,
+            FilterType::Triangle,
+        ))
+    } else {
+        image::DynamicImage::ImageRgba8(image)
+    };
+
+    // Save as JPEG — ~10× faster to encode than PNG at equivalent resolution.
+    let filename = generate_filename_with_id("monitor", monitor_id, "jpg")?;
+    let screenshot_path = save_path.join(&filename);
+    downsampled
+        .save(&screenshot_path)
+        .map_err(|e| format!("Failed to save screenshot: {}", e))?;
 
     Ok(MonitorShot {
         id: monitor_id,

@@ -8,14 +8,19 @@ mod clipboard;
 mod commands;
 mod image;
 mod ocr;
+mod recording;
 mod screenshot;
 mod utils;
 
 use commands::{
-    capture_all_monitors, capture_once, capture_region, copy_image_file_to_clipboard,
-    get_desktop_directory, get_mouse_position, get_temp_directory, move_window_to_active_space,
-    native_capture_fullscreen, native_capture_interactive, native_capture_window,
-    native_capture_ocr_region, play_screenshot_sound, render_image_with_effects_rust, save_edited_image,
+    activate_app, capture_all_monitors, capture_once, capture_region, check_ffmpeg,
+    copy_image_file_to_clipboard, get_desktop_directory, get_mouse_position,
+    get_recording_elapsed, get_recording_state, get_temp_directory, get_video_duration,
+    move_window_to_active_space,
+    native_capture_fullscreen, native_capture_interactive, native_capture_ocr_region,
+    native_capture_window, pause_video_recording, play_screenshot_sound,
+    render_image_with_effects_rust, resume_video_recording, save_edited_image, save_recording,
+    start_video_recording, stop_video_recording, trim_video,
 };
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -138,6 +143,55 @@ pub fn run() {
                 }
             });
 
+            // Recording controls window — small, frameless, always-on-top
+            let rec_controls = WebviewWindowBuilder::new(
+                app,
+                "recording-controls",
+                WebviewUrl::App("index.html?recording-controls=1".into()),
+            )
+            .title("Recording")
+            .inner_size(320.0, 72.0)
+            .resizable(false)
+            .decorations(false)
+            .visible(false)
+            .always_on_top(true)
+            .build()?;
+
+            let rec_controls_clone = rec_controls.clone();
+            rec_controls.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if let Err(e) = rec_controls_clone.hide() {
+                        eprintln!("Failed to hide recording controls: {}", e);
+                    }
+                    api.prevent_close();
+                }
+            });
+
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::msg_send;
+                use objc2_app_kit::NSWindow;
+
+                // Make recording controls float above everything
+                rec_controls
+                    .with_webview(|webview: tauri::webview::PlatformWebview| {
+                        let ns_window = webview.ns_window();
+                        if ns_window.is_null() {
+                            return;
+                        }
+                        let ns_window = unsafe { &*ns_window.cast::<NSWindow>() };
+                        unsafe {
+                            let collection_behavior: usize = 1 << 7;
+                            let current: usize = msg_send![ns_window, collectionBehavior];
+                            let new_behavior = current | collection_behavior;
+                            let _: () = msg_send![ns_window, setCollectionBehavior: new_behavior];
+                            let _: () = msg_send![ns_window, setHidesOnDeactivate: false];
+                            let _: () = msg_send![ns_window, setCanHide: false];
+                        }
+                    })
+                    .ok();
+            }
+
             #[cfg(target_os = "macos")]
             {
                 use objc2::msg_send;
@@ -178,6 +232,12 @@ pub fn run() {
             let capture_ocr_item =
                 MenuItemBuilder::with_id("capture_ocr", "OCR Region").build(app)?;
 
+            let record_screen_item =
+                MenuItemBuilder::with_id("record_screen", "Record Screen").build(app)?;
+
+            let record_region_item =
+                MenuItemBuilder::with_id("record_region", "Record Region").build(app)?;
+
             let preferences_item =
                 MenuItemBuilder::with_id("preferences", "Preferences...")
                     .accelerator("CommandOrControl+,")
@@ -195,6 +255,9 @@ pub fn run() {
                     &capture_screen_item,
                     &capture_window_item,
                     &capture_ocr_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &record_screen_item,
+                    &record_region_item,
                     &PredefinedMenuItem::separator(app)?,
                     &preferences_item,
                     &PredefinedMenuItem::separator(app)?,
@@ -223,6 +286,12 @@ pub fn run() {
                         }
                         "capture_ocr" => {
                             let _ = app.emit("capture-ocr", ());
+                        }
+                        "record_screen" => {
+                            let _ = app.emit("record-screen", ());
+                        }
+                        "record_region" => {
+                            let _ = app.emit("record-region", ());
                         }
                         "preferences" => {
                             if let Err(e) = show_main_window(app) {
@@ -255,8 +324,19 @@ pub fn run() {
             native_capture_ocr_region,
             play_screenshot_sound,
             get_mouse_position,
+            activate_app,
             move_window_to_active_space,
-            copy_image_file_to_clipboard
+            copy_image_file_to_clipboard,
+            check_ffmpeg,
+            start_video_recording,
+            pause_video_recording,
+            resume_video_recording,
+            stop_video_recording,
+            get_recording_state,
+            get_recording_elapsed,
+            get_video_duration,
+            trim_video,
+            save_recording
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

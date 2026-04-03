@@ -9,17 +9,19 @@ export async function processScreenshotWithDefaultBackground(
   imagePath: string
 ): Promise<string> {
   return new Promise(async (resolve, reject) => {
-    let backgroundType: BackgroundType = "image";
+    // Default to transparent so that if no preference has been saved, auto-apply
+    // produces a clean screenshot with no background added.
+    let backgroundType: BackgroundType = "transparent";
     let customColor = "#667eea";
     let defaultBgImage: string = getDefaultBackgroundPath();
     let bgImage: HTMLImageElement | null = null;
-    
+
     try {
       const store = await Store.load("settings.json");
       const storedBgType = await store.get<BackgroundType>("defaultBackgroundType");
       const storedCustomColor = await store.get<string>("defaultCustomColor");
       const storedDefaultBg = await store.get<string>("defaultBackgroundImage");
-      
+
       if (storedBgType) {
         backgroundType = storedBgType;
       }

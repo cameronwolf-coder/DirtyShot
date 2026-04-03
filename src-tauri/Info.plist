@@ -4,5 +4,9 @@
 <dict>
     <key>LSUIElement</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>BetterShot uses your microphone to record audio alongside screen recordings.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>BetterShot needs screen recording access to capture screenshots and recordings.</string>
 </dict>
 </plist>

@@ -3,18 +3,24 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import { QuickOverlay } from "./components/overlay/QuickOverlay";
+import { RecordingControls } from "./components/RecordingControls";
 import { Toaster } from "sonner";
 import { CheckCircle2 } from "lucide-react";
 
-type RootKind = "main" | "quick-overlay";
+type RootKind = "main" | "quick-overlay" | "recording-controls";
 
 function RootRouter() {
-  const [kind] = useState<RootKind>(() =>
-    window.location.search.includes("overlay=1") ? "quick-overlay" : "main",
-  );
+  const [kind] = useState<RootKind>(() => {
+    const search = window.location.search;
+    if (search.includes("overlay=1")) return "quick-overlay";
+    if (search.includes("recording-controls=1")) return "recording-controls";
+    return "main";
+  });
 
   const content =
-    kind === "quick-overlay" ? (
+    kind === "recording-controls" ? (
+      <RecordingControls />
+    ) : kind === "quick-overlay" ? (
       <QuickOverlay />
     ) : (
       <>

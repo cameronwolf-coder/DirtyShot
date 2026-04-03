@@ -3,7 +3,6 @@ import { subscribeWithSelector } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { Store } from "@tauri-apps/plugin-store";
 import { gradientOptions, type GradientOption } from "@/components/editor/BackgroundSelector";
-import { resolveBackgroundPath } from "@/lib/asset-registry";
 import { Annotation } from "@/types/annotations";
 
 // ============================================================================
@@ -132,7 +131,7 @@ const MAX_HISTORY_SIZE = 50;
 const DEFAULT_GRADIENT = gradientOptions[0];
 
 const DEFAULT_SETTINGS: EditorSettings = {
-  backgroundType: "white",
+  backgroundType: "transparent",
   customColor: "#667eea",
   selectedImageSrc: null,
   gradientId: DEFAULT_GRADIENT.id,
@@ -180,50 +179,18 @@ export const useEditorStore = create<EditorStore>()(
         try {
           const store = await Store.load("settings.json");
 
-          // Load background settings
-          const storedBgType = await store.get<BackgroundType>("defaultBackgroundType");
-          const storedCustomColor = await store.get<string>("defaultCustomColor");
-          const storedBg = await store.get<string>("defaultBackgroundImage");
-
           // Load effect settings
           const storedBlurAmount = await store.get<number>("defaultBlurAmount");
           const storedNoiseAmount = await store.get<number>("defaultNoiseAmount");
           const storedBorderRadius = await store.get<number>("defaultBorderRadius");
           const storedShadow = await store.get<ShadowSettings>("defaultShadow");
 
+          // Load default background preference so the editor opens with it
+          const storedBgType = await store.get<BackgroundType>("defaultBackgroundType");
+          const storedCustomColor = await store.get<string>("defaultCustomColor");
+          const storedBgImage = await store.get<string>("defaultBackgroundImage");
+
           set((state) => {
-            // Apply background settings from preferences only
-            if (storedBgType) {
-              state.settings.backgroundType = storedBgType;
-            }
-            if (storedCustomColor) {
-              state.settings.customColor = storedCustomColor;
-            }
-            if (storedBg) {
-              if (storedBgType === "image") {
-                const resolvedPath = resolveBackgroundPath(storedBg);
-                state.settings.selectedImageSrc = resolvedPath;
-              }
-
-              if (storedBg.startsWith("gradient-")) {
-                const gradientIndex = storedBg.replace("gradient-", "");
-                const gradient = gradientOptions.find(
-                  (option) => option.id === `mesh-${gradientIndex}`
-                );
-
-                if (gradient) {
-                  state.settings.gradientId = gradient.id;
-                  state.settings.gradientSrc = gradient.src;
-                  state.settings.gradientColors = gradient.colors;
-                }
-              }
-            } else if (storedBgType) {
-              // If background type is set but no image, ensure selectedImageSrc is null
-              if (storedBgType !== "image" && storedBgType !== "gradient") {
-                state.settings.selectedImageSrc = null;
-              }
-            }
-
             // Apply effect settings (padding is calculated dynamically, not loaded from defaults)
             if (storedBlurAmount !== null && storedBlurAmount !== undefined) {
               state.settings.blurAmount = storedBlurAmount;
@@ -236,6 +203,30 @@ export const useEditorStore = create<EditorStore>()(
             }
             if (storedShadow) {
               state.settings.shadow = storedShadow;
+            }
+
+            // Apply default background preference
+            if (storedBgType) {
+              state.settings.backgroundType = storedBgType;
+
+              if (storedBgType === "custom" && storedCustomColor) {
+                state.settings.customColor = storedCustomColor;
+              }
+
+              if (storedBgType === "gradient" && storedBgImage) {
+                // Preferences stores "gradient-X", editor uses "mesh-X"
+                const meshId = storedBgImage.replace("gradient-", "mesh-");
+                const match = gradientOptions.find((g) => g.id === meshId);
+                if (match) {
+                  state.settings.gradientId = match.id;
+                  state.settings.gradientSrc = match.src;
+                  state.settings.gradientColors = match.colors;
+                }
+              }
+
+              if (storedBgType === "image" && storedBgImage) {
+                state.settings.selectedImageSrc = storedBgImage;
+              }
             }
 
             state._isInitialized = true;

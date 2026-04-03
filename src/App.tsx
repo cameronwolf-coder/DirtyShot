@@ -15,7 +15,7 @@ import {
 } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { Store } from "@tauri-apps/plugin-store";
-import { AppWindowMac, Crop, Monitor, ScanText } from "lucide-react";
+import { AppWindowMac, Circle, Crop, Monitor, ScanText, Video } from "lucide-react";
 import { toast } from "sonner";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardShortcut } from "./components/preferences/KeyboardShortcutManager";
@@ -25,9 +25,11 @@ import { SettingsIcon } from "./components/SettingsIcon";
 const ImageEditor = lazy(() => import("./components/ImageEditor").then(m => ({ default: m.ImageEditor })));
 const OnboardingFlow = lazy(() => import("./components/onboarding/OnboardingFlow").then(m => ({ default: m.OnboardingFlow })));
 const PreferencesPage = lazy(() => import("./components/preferences/PreferencesPage").then(m => ({ default: m.PreferencesPage })));
+const VideoTrimmerLazy = lazy(() => import("./components/VideoTrimmer").then(m => ({ default: m.VideoTrimmer })));
+import { RegionSelector } from "./components/RegionSelector";
 
-type AppMode = "main" | "editing" | "preferences";
-type CaptureMode = "region" | "fullscreen" | "window" | "ocr";
+type AppMode = "main" | "editing" | "preferences" | "trimming" | "record-region-select";
+type CaptureMode = "region" | "fullscreen" | "window" | "ocr" | "record-screen" | "record-region";
 
 // Loading fallback for lazy loaded components
 function LoadingFallback() {
@@ -48,7 +50,9 @@ const DEFAULT_SHORTCUTS: KeyboardShortcut[] = [
   { id: "region", action: "Capture Region", shortcut: "CommandOrControl+Shift+2", enabled: true },
   { id: "fullscreen", action: "Capture Screen", shortcut: "CommandOrControl+Shift+F", enabled: false },
   { id: "window", action: "Capture Window", shortcut: "CommandOrControl+Shift+D", enabled: false },
-  { id: "ocr", action: "OCR Region", shortcut: "CommandOrControl+Shift+O", enabled: false },
+  { id: "ocr", action: "OCR Region", shortcut: "CommandOrControl+Shift+O", enabled: true },
+  { id: "record-screen", action: "Record Screen", shortcut: "CommandOrControl+Shift+5", enabled: false },
+  { id: "record-region", action: "Record Region", shortcut: "CommandOrControl+Shift+6", enabled: false },
 ];
 
 function formatShortcut(shortcut: string): string {
@@ -203,6 +207,9 @@ async function showQuickOverlay(
     await overlay.setSize(new LogicalSize(overlayWidth, overlayHeight));
     await overlay.setPosition(new PhysicalPosition(targetX, targetY));
     await overlay.setAlwaysOnTop(true);
+    // Re-activate the app — required for LSUIElement apps after the main
+    // window hides, otherwise macOS won't render the overlay.
+    await invoke("activate_app");
     await overlay.show();
     await overlay.setFocus();
   } catch (error) {
@@ -222,16 +229,23 @@ function App() {
   const [shortcuts, setShortcuts] = useState<KeyboardShortcut[]>(DEFAULT_SHORTCUTS);
   const [settingsVersion, setSettingsVersion] = useState(0);
   const [tempDir, setTempDir] = useState<string>("/tmp");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingPath, setRecordingPath] = useState<string | null>(null);
+  const [copyOcrToClipboard, setCopyOcrToClipboard] = useState(true);
+  // Backgrounds for the record-region selection overlay
+  const [recordingMonitorShots, setRecordingMonitorShots] = useState<{
+    id: number; x: number; y: number; width: number; height: number; scale_factor: number; path: string;
+  }[]>([]);
 
   // Refs to hold current values for use in callbacks that may have stale closures
-  const settingsRef = useRef({ autoApplyBackground, saveDir, copyToClipboard, tempDir });
+  const settingsRef = useRef({ autoApplyBackground, saveDir, copyToClipboard, copyOcrToClipboard, tempDir });
   const registeredShortcutsRef = useRef<Set<string>>(new Set());
   const lastCaptureTimeRef = useRef(0);
   
   // Keep ref in sync with state
   useEffect(() => {
-    settingsRef.current = { autoApplyBackground, saveDir, copyToClipboard, tempDir };
-  }, [autoApplyBackground, saveDir, copyToClipboard, tempDir]);
+    settingsRef.current = { autoApplyBackground, saveDir, copyToClipboard, copyOcrToClipboard, tempDir };
+  }, [autoApplyBackground, saveDir, copyToClipboard, copyOcrToClipboard, tempDir]);
 
   // Load settings function
   const loadSettings = useCallback(async () => {
@@ -252,6 +266,11 @@ function App() {
       const savedAutoApply = await store.get<boolean>("autoApplyBackground");
       if (savedAutoApply !== null && savedAutoApply !== undefined) {
         setAutoApplyBackground(savedAutoApply);
+      }
+
+      const savedCopyOcr = await store.get<boolean>("copyOcrToClipboard");
+      if (savedCopyOcr !== null && savedCopyOcr !== undefined) {
+        setCopyOcrToClipboard(savedCopyOcr);
       }
 
       const savedSaveDir = await store.get<string>("saveDir");
@@ -316,6 +335,11 @@ function App() {
           setAutoApplyBackground(savedAutoApply);
         }
 
+        const savedCopyOcr2 = await store.get<boolean>("copyOcrToClipboard");
+        if (savedCopyOcr2 !== null && savedCopyOcr2 !== undefined) {
+          setCopyOcrToClipboard(savedCopyOcr2);
+        }
+
         // Only use saved directory if it's a non-empty string, otherwise use desktop
         const savedSaveDir = await store.get<string>("saveDir");
         if (savedSaveDir && savedSaveDir.trim() !== "") {
@@ -368,6 +392,16 @@ function App() {
 
 
   const handleCapture = useCallback(async (captureMode: CaptureMode = "region") => {
+    // Route recording modes to the recording handler
+    if (captureMode === "record-screen") {
+      handleStartRecording("fullscreen");
+      return;
+    }
+    if (captureMode === "record-region") {
+      handleStartRecording("region");
+      return;
+    }
+
     const now = Date.now();
     if (now - lastCaptureTimeRef.current < 600) {
       return;
@@ -382,7 +416,7 @@ function App() {
     const appWindow = getCurrentWindow();
     
     // Read current settings from ref to avoid stale closure issues
-    const { autoApplyBackground: shouldAutoApply, saveDir: currentSaveDir, copyToClipboard: shouldCopyToClipboard, tempDir: currentTempDir } = settingsRef.current;
+    const { autoApplyBackground: shouldAutoApply, saveDir: currentSaveDir, copyToClipboard: shouldCopyToClipboard, copyOcrToClipboard: shouldCopyOcr, tempDir: currentTempDir } = settingsRef.current;
 
     try {
       await appWindow.hide();
@@ -392,9 +426,10 @@ function App() {
         try {
           const recognizedText = await invoke<string>("native_capture_ocr_region", {
             saveDir: currentTempDir,
+            copyToClip: shouldCopyOcr,
           });
 
-          toast.success("Text copied to clipboard!", {
+          toast.success(shouldCopyOcr ? "Text copied to clipboard!" : "Text recognized!", {
             description: recognizedText.length > 50 ? `${recognizedText.substring(0, 50)}...` : recognizedText,
             duration: 3000,
           });
@@ -430,7 +465,7 @@ function App() {
         return;
       }
 
-      const commandMap: Record<Exclude<CaptureMode, "ocr">, string> = {
+      const commandMap: Record<Exclude<CaptureMode, "ocr" | "record-screen" | "record-region">, string> = {
         region: "native_capture_interactive",
         fullscreen: "native_capture_fullscreen",
         window: "native_capture_window",
@@ -517,6 +552,145 @@ function App() {
     }
   }, [isCapturing]);
 
+  // Show the recording controls window, positioned at the bottom-centre of the primary monitor
+  const showRecordingControls = useCallback(async () => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const controlsWindow = await WebviewWindow.getByLabel("recording-controls");
+      if (controlsWindow) {
+        const monitors = await availableMonitors();
+        if (monitors.length > 0) {
+          const mon = monitors[0];
+          const scale = mon.scaleFactor;
+          const winW = 320 * scale;
+          const cx = mon.position.x + (mon.size.width - winW) / 2;
+          const cy = mon.position.y + mon.size.height - 120 * scale;
+          await controlsWindow.setPosition(new PhysicalPosition(cx, cy));
+        }
+        await controlsWindow.show();
+        await controlsWindow.setFocus();
+      }
+    } catch (err) {
+      console.error("Failed to show recording controls:", err);
+    }
+  }, []);
+
+  // Kick off the actual recording (called after region is known or for fullscreen)
+  const beginRecording = useCallback(async (region?: { x: number; y: number; width: number; height: number }) => {
+    const appWindow = getCurrentWindow();
+    const { tempDir: currentTempDir } = settingsRef.current;
+    try {
+      await appWindow.hide();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      await invoke("start_video_recording", {
+        saveDir: currentTempDir,
+        region: region ?? null,
+      });
+
+      await showRecordingControls();
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (
+        errorMessage.toLowerCase().includes("permission") ||
+        errorMessage.toLowerCase().includes("denied")
+      ) {
+        setError(
+          "Screen Recording permission required. Please go to System Settings > Privacy & Security > Screen Recording and enable access for Better Shot, then restart the app."
+        );
+        await restoreWindow();
+      } else {
+        setError(errorMessage);
+        toast.error("Recording failed", { description: errorMessage, duration: 5000 });
+        await appWindow.hide();
+      }
+      setIsRecording(false);
+    }
+  }, [showRecordingControls]);
+
+  // Handle starting a screen recording
+  const handleStartRecording = useCallback(async (mode: "fullscreen" | "region") => {
+    if (isRecording || isCapturing) return;
+    setIsRecording(true);
+    setError(null);
+
+    if (mode === "region") {
+      // Capture monitor screenshots to use as region-selector backgrounds, then show the selector
+      const { tempDir: currentTempDir } = settingsRef.current;
+      try {
+        const shots = await invoke<{ id: number; x: number; y: number; width: number; height: number; scale_factor: number; path: string; }[]>(
+          "capture_all_monitors",
+          { saveDir: currentTempDir }
+        );
+        setRecordingMonitorShots(shots);
+        setMode("record-region-select");
+        await invoke("move_window_to_active_space");
+        await restoreWindowOnScreen();
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        setError(errorMessage);
+        setIsRecording(false);
+      }
+      return;
+    }
+
+    // Fullscreen recording — start immediately
+    await beginRecording(undefined);
+  }, [isRecording, isCapturing, beginRecording]);
+
+  // Called when the user finishes drawing a region in the record-region-select overlay
+  const handleRecordRegionSelected = useCallback(async (region: { x: number; y: number; width: number; height: number }) => {
+    setMode("main");
+    await beginRecording(region);
+  }, [beginRecording]);
+
+  const handleRecordRegionCancelled = useCallback(() => {
+    setMode("main");
+    setIsRecording(false);
+    setRecordingMonitorShots([]);
+  }, []);
+
+  // Handle stop requested from the recording controls window
+  const handleStopRecording = useCallback(async () => {
+    const { tempDir: currentTempDir } = settingsRef.current;
+
+    try {
+      // Hide recording controls
+      await emitTo("recording-controls", "hide-recording-controls");
+
+      // Stop recording and get the final file
+      const finalPath = await invoke<string>("stop_video_recording", {
+        outputDir: currentTempDir,
+      });
+
+      setIsRecording(false);
+      setRecordingPath(finalPath);
+      setMode("trimming");
+      try {
+        await invoke("move_window_to_active_space");
+      } catch {
+        // ignore
+      }
+      await restoreWindow();
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setIsRecording(false);
+      setError(errorMessage);
+      toast.error("Recording failed", { description: errorMessage, duration: 5000 });
+    }
+  }, []);
+
+  const handleRecordingSave = useCallback((savedPath: string) => {
+    setMode("main");
+    setRecordingPath(null);
+    toast.success("Recording saved", { description: savedPath, duration: 4000 });
+  }, []);
+
+  const handleRecordingCancel = useCallback(() => {
+    setMode("main");
+    setRecordingPath(null);
+  }, []);
+
   // Setup hotkeys whenever settings change
   useEffect(() => {
     const setupHotkeys = async () => {
@@ -536,6 +710,8 @@ function App() {
           "Capture Screen": "fullscreen",
           "Capture Window": "window",
           "OCR Region": "ocr",
+          "Record Screen": "record-screen",
+          "Record Region": "record-region",
         };
 
         for (const shortcut of shortcuts) {
@@ -584,6 +760,9 @@ function App() {
     let unlisten6: (() => void) | null = null;
     let unlisten7: (() => void) | null = null;
     let unlisten8: (() => void) | null = null;
+    let unlisten9: (() => void) | null = null;
+    let unlisten10: (() => void) | null = null;
+    let unlisten11: (() => void) | null = null;
     let mounted = true;
 
     const setupListeners = async () => {
@@ -619,6 +798,15 @@ function App() {
         }
         await restoreWindow();
       });
+      unlisten9 = await listen("record-screen", () => {
+        if (mounted) handleCaptureRef.current("record-screen");
+      });
+      unlisten10 = await listen("record-region", () => {
+        if (mounted) handleCaptureRef.current("record-region");
+      });
+      unlisten11 = await listen("recording-stop-requested", () => {
+        if (mounted) handleStopRecording();
+      });
       unlisten8 = await listen("show-last-capture-overlay", async () => {
         if (!mounted) return;
         try {
@@ -645,6 +833,9 @@ function App() {
       unlisten6?.();
       unlisten7?.();
       unlisten8?.();
+      unlisten9?.();
+      unlisten10?.();
+      unlisten11?.();
     };
   }, []); // Empty dependency array - only run once on mount
 
@@ -717,6 +908,30 @@ function App() {
     const defaultShortcut = DEFAULT_SHORTCUTS.find(s => s.id === actionId);
     return defaultShortcut ? formatShortcut(defaultShortcut.shortcut) : "—";
   };
+
+  if (mode === "trimming" && recordingPath) {
+    return (
+      <Suspense fallback={<LoadingFallback />}>
+        <VideoTrimmerLazy
+          videoPath={recordingPath}
+          saveDir={saveDir}
+          copyToClipboard={copyToClipboard}
+          onSave={handleRecordingSave}
+          onCancel={handleRecordingCancel}
+        />
+      </Suspense>
+    );
+  }
+
+  if (mode === "record-region-select") {
+    return (
+      <RegionSelector
+        monitorShots={recordingMonitorShots}
+        onSelect={handleRecordRegionSelected}
+        onCancel={handleRecordRegionCancelled}
+      />
+    );
+  }
 
   if (mode === "editing" && tempScreenshotPath) {
     return (
@@ -817,6 +1032,40 @@ function App() {
               </Button>
             </div>
 
+            {/* Recording Buttons */}
+            <div className="grid grid-cols-2 gap-3">
+              <Button
+                onClick={() => handleCapture("record-screen")}
+                disabled={isCapturing || isRecording}
+                variant="cta"
+                size="lg"
+                className="py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Video className="size-4" aria-hidden="true" />
+                Record Screen
+              </Button>
+              <Button
+                onClick={() => handleCapture("record-region")}
+                disabled={isCapturing || isRecording}
+                variant="cta"
+                size="lg"
+                className="py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Circle className="size-4" aria-hidden="true" />
+                Record Region
+              </Button>
+            </div>
+
+            {isRecording && (
+              <div className="flex items-center justify-center gap-2 text-red-400 text-sm">
+                <span className="relative flex size-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full size-3 bg-red-500"></span>
+                </span>
+                Recording... Click the stop button in the menu bar to finish.
+              </div>
+            )}
+
             {/* Quick Toggle for Auto-apply */}
             <div className="flex items-center justify-between py-2 px-1">
               <div className="flex-1">
@@ -886,6 +1135,25 @@ function App() {
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Cancel</span>
                   <kbd className="px-2 py-1 bg-secondary border border-border rounded text-foreground font-mono text-xs tabular-nums">Esc</kbd>
+                </div>
+              </div>
+            </div>
+
+            {/* Recording Shortcuts */}
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Recording</p>
+              <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Record Screen</span>
+                  <kbd className="px-2 py-1 bg-secondary border border-border rounded text-foreground font-mono text-xs tabular-nums">
+                    {getShortcutDisplay("record-screen")}
+                  </kbd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Record Region</span>
+                  <kbd className="px-2 py-1 bg-secondary border border-border rounded text-foreground font-mono text-xs tabular-nums">
+                    {getShortcutDisplay("record-region")}
+                  </kbd>
                 </div>
               </div>
             </div>
