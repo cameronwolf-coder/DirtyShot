@@ -8,19 +8,15 @@ mod clipboard;
 mod commands;
 mod image;
 mod ocr;
-mod recording;
 mod screenshot;
 mod utils;
 
 use commands::{
-    activate_app, capture_all_monitors, capture_once, capture_region, check_ffmpeg,
-    copy_image_file_to_clipboard, get_desktop_directory, get_mouse_position,
-    get_recording_elapsed, get_recording_state, get_temp_directory, get_video_duration,
-    move_window_to_active_space,
+    activate_app, capture_all_monitors, capture_once, capture_region,
+    check_screen_recording_permission, copy_image_file_to_clipboard, get_desktop_directory,
+    get_mouse_position, get_temp_directory, move_window_to_active_space,
     native_capture_fullscreen, native_capture_interactive, native_capture_ocr_region,
-    native_capture_window, pause_video_recording, play_screenshot_sound,
-    render_image_with_effects_rust, resume_video_recording, save_edited_image, save_recording,
-    start_video_recording, stop_video_recording, trim_video,
+    native_capture_window, play_screenshot_sound, render_image_with_effects_rust, save_edited_image,
 };
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -72,6 +68,7 @@ fn show_main_window(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_screenshots::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -327,16 +324,7 @@ pub fn run() {
             activate_app,
             move_window_to_active_space,
             copy_image_file_to_clipboard,
-            check_ffmpeg,
-            start_video_recording,
-            pause_video_recording,
-            resume_video_recording,
-            stop_video_recording,
-            get_recording_state,
-            get_recording_elapsed,
-            get_video_duration,
-            trim_video,
-            save_recording
+            check_screen_recording_permission,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

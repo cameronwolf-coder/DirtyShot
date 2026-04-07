@@ -6,6 +6,7 @@ interface Region {
   y: number;
   width: number;
   height: number;
+  scaleFactor: number;
 }
 
 interface RegionSelectorProps {
@@ -33,21 +34,33 @@ export function RegionSelector({ onSelect, onCancel, monitorShots }: RegionSelec
   const currentRef = useRef({ x: 0, y: 0 });
   const needsUpdateRef = useRef(false);
 
-  // Calculate bounds for multi-monitor
+  // Calculate bounds in LOGICAL pixels (divide physical coords by scale_factor)
+  const logicalShots = useMemo(
+    () =>
+      monitorShots.map((s) => ({
+        ...s,
+        logicalX: s.x / s.scale_factor,
+        logicalY: s.y / s.scale_factor,
+        logicalW: s.width / s.scale_factor,
+        logicalH: s.height / s.scale_factor,
+      })),
+    [monitorShots]
+  );
+
   const bounds = useMemo(() => {
-    if (!monitorShots.length) return { minX: 0, minY: 0, width: 0, height: 0 };
-    const result = monitorShots.reduce(
+    if (!logicalShots.length) return { minX: 0, minY: 0, width: 0, height: 0 };
+    const result = logicalShots.reduce(
       (acc, s) => ({
-        minX: Math.min(acc.minX, s.x),
-        minY: Math.min(acc.minY, s.y),
-        maxX: Math.max(acc.maxX, s.x + s.width),
-        maxY: Math.max(acc.maxY, s.y + s.height),
+        minX: Math.min(acc.minX, s.logicalX),
+        minY: Math.min(acc.minY, s.logicalY),
+        maxX: Math.max(acc.maxX, s.logicalX + s.logicalW),
+        maxY: Math.max(acc.maxY, s.logicalY + s.logicalH),
       }),
-      { 
-        minX: monitorShots[0].x, 
-        minY: monitorShots[0].y,
-        maxX: monitorShots[0].x + monitorShots[0].width,
-        maxY: monitorShots[0].y + monitorShots[0].height,
+      {
+        minX: logicalShots[0].logicalX,
+        minY: logicalShots[0].logicalY,
+        maxX: logicalShots[0].logicalX + logicalShots[0].logicalW,
+        maxY: logicalShots[0].logicalY + logicalShots[0].logicalH,
       }
     );
     return {
@@ -56,18 +69,18 @@ export function RegionSelector({ onSelect, onCancel, monitorShots }: RegionSelec
       width: result.maxX - result.minX,
       height: result.maxY - result.minY,
     };
-  }, [monitorShots]);
+  }, [logicalShots]);
 
-  // Normalized shots for rendering
+  // Normalized shots for rendering (all in logical CSS pixels)
   const normalizedShots = useMemo(
     () =>
-      monitorShots.map((shot) => ({
+      logicalShots.map((shot) => ({
         ...shot,
-        left: shot.x - bounds.minX,
-        top: shot.y - bounds.minY,
+        left: shot.logicalX - bounds.minX,
+        top: shot.logicalY - bounds.minY,
         url: convertFileSrc(shot.path),
       })),
-    [monitorShots, bounds.minX, bounds.minY]
+    [logicalShots, bounds.minX, bounds.minY]
   );
 
   // Canvas rendering loop - runs on RAF for smooth updates
@@ -202,17 +215,30 @@ export function RegionSelector({ onSelect, onCancel, monitorShots }: RegionSelec
       if (!isSelectingRef.current) return;
       isSelectingRef.current = false;
 
-      const x = Math.min(startRef.current.x, currentRef.current.x);
-      const y = Math.min(startRef.current.y, currentRef.current.y);
-      const width = Math.abs(currentRef.current.x - startRef.current.x);
-      const height = Math.abs(currentRef.current.y - startRef.current.y);
+      const cssX = Math.min(startRef.current.x, currentRef.current.x);
+      const cssY = Math.min(startRef.current.y, currentRef.current.y);
+      const cssW = Math.abs(currentRef.current.x - startRef.current.x);
+      const cssH = Math.abs(currentRef.current.y - startRef.current.y);
 
-      if (width > 10 && height > 10) {
+      if (cssW > 10 && cssH > 10) {
+        // Find scale_factor of monitor containing the selection center
+        const centerX = cssX + cssW / 2 + bounds.minX;
+        const centerY = cssY + cssH / 2 + bounds.minY;
+        const containing = logicalShots.find(
+          (s) =>
+            centerX >= s.logicalX &&
+            centerX < s.logicalX + s.logicalW &&
+            centerY >= s.logicalY &&
+            centerY < s.logicalY + s.logicalH
+        );
+        const scaleFactor = containing?.scale_factor ?? 1;
+
         onSelect({
-          x: x + bounds.minX,
-          y: y + bounds.minY,
-          width,
-          height,
+          x: (cssX + bounds.minX) * scaleFactor,
+          y: (cssY + bounds.minY) * scaleFactor,
+          width: cssW * scaleFactor,
+          height: cssH * scaleFactor,
+          scaleFactor,
         });
       } else {
         // Reset selection if too small
@@ -253,8 +279,8 @@ export function RegionSelector({ onSelect, onCancel, monitorShots }: RegionSelec
           style={{
             left: shot.left,
             top: shot.top,
-            width: shot.width,
-            height: shot.height,
+            width: shot.logicalW,
+            height: shot.logicalH,
           }}
         />
       ))}
@@ -267,7 +293,9 @@ export function RegionSelector({ onSelect, onCancel, monitorShots }: RegionSelec
 
       {/* Instructions */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded-lg text-sm pointer-events-none">
-        Drag to select · ESC to cancel
+        {monitorShots.length === 0
+          ? "Could not capture screen — press ESC and try again"
+          : "Drag to select · ESC to cancel"}
       </div>
     </div>
   );

@@ -14,7 +14,6 @@ use objc2_app_kit::NSWindow;
 use objc2_app_kit::NSApplication;
 
 use crate::clipboard::{copy_image_to_clipboard, copy_text_to_clipboard};
-use crate::recording;
 use crate::image::{copy_screenshot_to_dir, crop_image, render_image_with_effects, save_base64_image, CropRegion, RenderSettings};
 use crate::ocr::recognize_text_from_image;
 use crate::screenshot::{
@@ -554,79 +553,12 @@ pub async fn native_capture_ocr_region(save_dir: String, copy_to_clip: Option<bo
     Ok(recognized_text)
 }
 
-// ─── Video Recording Commands ────────────────────────────────────────────────
+// ─── Screen Recording Permission ─────────────────────────────────────────────
 
-/// Check if ffmpeg is available for video recording/trimming
+/// Check (and activate) screen recording permission.
+/// Returns Ok(true) if permission is granted, Err(message) if denied.
+/// Used by the JS recording pipeline before calling getDisplayMedia().
 #[tauri::command]
-pub async fn check_ffmpeg() -> Result<bool, String> {
-    Ok(recording::is_ffmpeg_available())
-}
-
-/// Start a screen recording.
-/// region is optional — omit for fullscreen, provide {x,y,width,height} for region.
-/// Note: does NOT call check_and_activate_permission() — ffmpeg avfoundation
-/// handles its own permission check and macOS will prompt once on first use.
-#[tauri::command]
-pub async fn start_video_recording(
-    save_dir: String,
-    region: Option<recording::RecordRegion>,
-) -> Result<(), String> {
-    recording::start_recording(&save_dir, region)
-}
-
-/// Pause the active recording
-#[tauri::command]
-pub async fn pause_video_recording() -> Result<(), String> {
-    recording::pause_recording()
-}
-
-/// Resume a paused recording
-#[tauri::command]
-pub async fn resume_video_recording() -> Result<(), String> {
-    recording::resume_recording()
-}
-
-/// Stop recording and produce the final output file. Returns the file path.
-#[tauri::command]
-pub async fn stop_video_recording(output_dir: String) -> Result<String, String> {
-    recording::stop_recording(&output_dir)
-}
-
-/// Get current recording state: "idle" | "recording" | "paused"
-#[tauri::command]
-pub async fn get_recording_state() -> Result<String, String> {
-    Ok(recording::get_state_name().to_string())
-}
-
-/// Get elapsed recording time in seconds
-#[tauri::command]
-pub async fn get_recording_elapsed() -> Result<f64, String> {
-    Ok(recording::get_elapsed_seconds())
-}
-
-/// Get the duration of a video file in seconds
-#[tauri::command]
-pub async fn get_video_duration(path: String) -> Result<f64, String> {
-    recording::get_duration(&path)
-}
-
-/// Trim a video file and return the path to the trimmed output
-#[tauri::command]
-pub async fn trim_video(
-    input_path: String,
-    output_dir: String,
-    start_secs: f64,
-    end_secs: f64,
-) -> Result<String, String> {
-    recording::trim_video(&input_path, &output_dir, start_secs, end_secs)
-}
-
-/// Save a recording to the final directory and optionally copy to clipboard
-#[tauri::command]
-pub async fn save_recording(
-    recording_path: String,
-    save_dir: String,
-    copy_to_clip: bool,
-) -> Result<String, String> {
-    recording::save_recording(&recording_path, &save_dir, copy_to_clip)
+pub async fn check_screen_recording_permission() -> Result<bool, String> {
+    check_and_activate_permission().map(|_| true)
 }

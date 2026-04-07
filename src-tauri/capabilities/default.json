@@ -44,6 +44,13 @@
     "autostart:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
-    "autostart:allow-is-enabled"
+    "autostart:allow-is-enabled",
+    "fs:default",
+    "fs:allow-write-file",
+    "fs:scope-desktop-recursive",
+    "fs:scope-download-recursive",
+    "fs:scope-document-recursive",
+    "fs:scope-video-recursive",
+    "fs:scope-home-recursive"
   ]
 }

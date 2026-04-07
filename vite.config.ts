@@ -16,6 +16,9 @@ export default defineConfig(async () => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  optimizeDeps: {
+    exclude: ["web-demuxer"],
+  },
   build: {
     rollupOptions: {
       output: {
@@ -34,6 +37,10 @@ export default defineConfig(async () => ({
           "vendor-motion": ["motion"],
           // State management
           "vendor-state": ["zustand", "immer"],
+          // GPU rendering (lazy-loaded)
+          "vendor-pixi": ["pixi.js", "pixi-filters"],
+          // Media pipeline (lazy-loaded)
+          "vendor-media": ["mediabunny", "fix-webm-duration"],
         },
       },
     },

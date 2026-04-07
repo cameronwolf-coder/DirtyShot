@@ -1,69 +1,58 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Pause, Play, Square } from "lucide-react";
 
 type RecState = "recording" | "paused";
 
-function formatElapsed(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
+function formatElapsed(ms: number): string {
+  const totalSecs = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
   return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
 }
 
 export function RecordingControls() {
-  const [state, setState] = useState<RecState>("recording");
-  const [elapsed, setElapsed] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [recState, setRecState] = useState<RecState>("recording");
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const unlistenRef = useRef<Array<() => void>>([]);
 
-  // Poll elapsed time from backend
   useEffect(() => {
-    const tick = () => {
-      invoke<number>("get_recording_elapsed")
-        .then(setElapsed)
-        .catch(() => {});
+    const setup = async () => {
+      const unlistenTimer = await listen<{ elapsedMs: number; state: string }>(
+        "recording-timer-update",
+        ({ payload }) => {
+          setElapsedMs(payload.elapsedMs);
+          setRecState(payload.state === "paused" ? "paused" : "recording");
+        }
+      );
+
+      const unlistenHide = await listen("hide-recording-controls", () => {
+        getCurrentWindow().hide().catch(() => {});
+      });
+
+      unlistenRef.current = [unlistenTimer, unlistenHide];
     };
-    tick();
-    timerRef.current = setInterval(tick, 250);
+
+    setup();
+
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      unlistenRef.current.forEach((fn) => fn());
     };
-  }, []);
-
-  // Listen for hide signal from main window
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen("hide-recording-controls", () => {
-      getCurrentWindow().hide().catch(() => {});
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
   }, []);
 
   const handlePauseResume = useCallback(async () => {
-    try {
-      if (state === "recording") {
-        await invoke("pause_video_recording");
-        setState("paused");
-      } else if (state === "paused") {
-        await invoke("resume_video_recording");
-        setState("recording");
-      }
-    } catch (err) {
-      console.error("Pause/resume failed:", err);
+    if (recState === "recording") {
+      await emitTo("main", "recording-pause-request").catch(console.error);
+    } else {
+      await emitTo("main", "recording-resume-request").catch(console.error);
     }
-  }, [state]);
+  }, [recState]);
 
   const handleStop = useCallback(async () => {
-    try {
-      // Tell the main window to handle the stop + trimmer flow
-      await emitTo("main", "recording-stop-requested");
-    } catch (err) {
-      console.error("Stop emit failed:", err);
-    }
+    await emitTo("main", "recording-stop-requested").catch(console.error);
   }, []);
 
-  // Make window draggable
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
     getCurrentWindow().startDragging().catch(() => {});
@@ -77,28 +66,28 @@ export function RecordingControls() {
       <div className="flex items-center gap-3 px-5 py-3 rounded-2xl bg-zinc-900 border border-zinc-700 shadow-2xl select-none cursor-move">
         {/* Recording indicator */}
         <span className="relative flex size-3">
-          {state === "recording" && (
+          {recState === "recording" && (
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
           )}
           <span
             className={`relative inline-flex rounded-full size-3 ${
-              state === "recording" ? "bg-red-500" : "bg-yellow-500"
+              recState === "recording" ? "bg-red-500" : "bg-yellow-500"
             }`}
           />
         </span>
 
         {/* Timer */}
         <span className="text-white font-mono text-sm tabular-nums min-w-[48px]">
-          {formatElapsed(elapsed)}
+          {formatElapsed(elapsedMs)}
         </span>
 
         {/* Pause / Resume */}
         <button
           onClick={handlePauseResume}
           className="flex items-center justify-center size-8 rounded-full bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-500 text-white transition-colors"
-          title={state === "recording" ? "Pause" : "Resume"}
+          title={recState === "recording" ? "Pause" : "Resume"}
         >
-          {state === "recording" ? (
+          {recState === "recording" ? (
             <Pause className="size-4" />
           ) : (
             <Play className="size-4" />

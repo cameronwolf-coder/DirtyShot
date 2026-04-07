@@ -21,14 +21,17 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { KeyboardShortcut } from "./components/preferences/KeyboardShortcutManager";
 import { SettingsIcon } from "./components/SettingsIcon";
 
+import { useScreenRecorder } from "./hooks/useScreenRecorder";
+import type { RecordRegion } from "./hooks/useScreenRecorder";
+
 // Lazy load heavy components
 const ImageEditor = lazy(() => import("./components/ImageEditor").then(m => ({ default: m.ImageEditor })));
 const OnboardingFlow = lazy(() => import("./components/onboarding/OnboardingFlow").then(m => ({ default: m.OnboardingFlow })));
 const PreferencesPage = lazy(() => import("./components/preferences/PreferencesPage").then(m => ({ default: m.PreferencesPage })));
-const VideoTrimmerLazy = lazy(() => import("./components/VideoTrimmer").then(m => ({ default: m.VideoTrimmer })));
+const VideoEditorLazy = lazy(() => import("./components/VideoEditor").then(m => ({ default: m.VideoEditor })));
 import { RegionSelector } from "./components/RegionSelector";
 
-type AppMode = "main" | "editing" | "preferences" | "trimming" | "record-region-select";
+type AppMode = "main" | "editing" | "preferences" | "video-editing" | "record-region-select";
 type CaptureMode = "region" | "fullscreen" | "window" | "ocr" | "record-screen" | "record-region";
 
 // Loading fallback for lazy loaded components
@@ -230,12 +233,44 @@ function App() {
   const [settingsVersion, setSettingsVersion] = useState(0);
   const [tempDir, setTempDir] = useState<string>("/tmp");
   const [isRecording, setIsRecording] = useState(false);
-  const [recordingPath, setRecordingPath] = useState<string | null>(null);
+  const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
+  const [recordingDurationMs, setRecordingDurationMs] = useState(0);
+  const [recordingRegion, setRecordingRegion] = useState<RecordRegion | undefined>(undefined);
   const [copyOcrToClipboard, setCopyOcrToClipboard] = useState(true);
   // Backgrounds for the record-region selection overlay
   const [recordingMonitorShots, setRecordingMonitorShots] = useState<{
     id: number; x: number; y: number; width: number; height: number; scale_factor: number; path: string;
   }[]>([]);
+
+  // Screen recorder — JS-driven via getDisplayMedia + MediaRecorder
+  const { start: startRecording, stop: stopRecording, pause: pauseRecording, resume: resumeRecording } =
+    useScreenRecorder({
+      onStop: useCallback((blob: Blob, durationMs: number, region?: RecordRegion) => {
+        setRecordingBlob(blob);
+        setRecordingDurationMs(durationMs);
+        setRecordingRegion(region);
+        setIsRecording(false);
+        setMode("video-editing");
+        invoke("move_window_to_active_space").catch(() => {});
+        restoreWindow();
+      }, []),
+      onError: useCallback((message: string) => {
+        setIsRecording(false);
+        setError(message);
+        toast.error("Recording failed", { description: message, duration: 5000 });
+        restoreWindow();
+      }, []),
+    });
+
+  // Stable refs for recorder actions (used in event listeners with empty deps)
+  const startRecordingRef = useRef(startRecording);
+  const stopRecordingRef = useRef(stopRecording);
+  const pauseRecordingRef = useRef(pauseRecording);
+  const resumeRecordingRef = useRef(resumeRecording);
+  useEffect(() => { startRecordingRef.current = startRecording; }, [startRecording]);
+  useEffect(() => { stopRecordingRef.current = stopRecording; }, [stopRecording]);
+  useEffect(() => { pauseRecordingRef.current = pauseRecording; }, [pauseRecording]);
+  useEffect(() => { resumeRecordingRef.current = resumeRecording; }, [resumeRecording]);
 
   // Refs to hold current values for use in callbacks that may have stale closures
   const settingsRef = useRef({ autoApplyBackground, saveDir, copyToClipboard, copyOcrToClipboard, tempDir });
@@ -552,20 +587,35 @@ function App() {
     }
   }, [isCapturing]);
 
-  // Show the recording controls window, positioned at the bottom-centre of the primary monitor
-  const showRecordingControls = useCallback(async () => {
+  // Show the recording controls window, positioned at the bottom-centre of the region's monitor
+  // (or primary monitor for fullscreen recording)
+  const showRecordingControls = useCallback(async (region?: RecordRegion) => {
     try {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
       const controlsWindow = await WebviewWindow.getByLabel("recording-controls");
       if (controlsWindow) {
         const monitors = await availableMonitors();
         if (monitors.length > 0) {
-          const mon = monitors[0];
+          // For region recording, find the monitor containing the region center
+          let mon = monitors[0];
+          if (region) {
+            const cx = region.x + region.width / 2;
+            const cy = region.y + region.height / 2;
+            const found = monitors.find((m) => {
+              const sf = m.scaleFactor;
+              const lx = m.position.x / sf;
+              const ly = m.position.y / sf;
+              const lw = m.size.width / sf;
+              const lh = m.size.height / sf;
+              return cx >= lx && cx < lx + lw && cy >= ly && cy < ly + lh;
+            });
+            if (found) mon = found;
+          }
           const scale = mon.scaleFactor;
           const winW = 320 * scale;
-          const cx = mon.position.x + (mon.size.width - winW) / 2;
-          const cy = mon.position.y + mon.size.height - 120 * scale;
-          await controlsWindow.setPosition(new PhysicalPosition(cx, cy));
+          const px = mon.position.x + (mon.size.width - winW) / 2;
+          const py = mon.position.y + mon.size.height - 120 * scale;
+          await controlsWindow.setPosition(new PhysicalPosition(px, py));
         }
         await controlsWindow.show();
         await controlsWindow.setFocus();
@@ -576,19 +626,14 @@ function App() {
   }, []);
 
   // Kick off the actual recording (called after region is known or for fullscreen)
-  const beginRecording = useCallback(async (region?: { x: number; y: number; width: number; height: number }) => {
+  const beginRecording = useCallback(async (region?: RecordRegion) => {
     const appWindow = getCurrentWindow();
-    const { tempDir: currentTempDir } = settingsRef.current;
     try {
+      // Show controls early so timer is visible from the start
+      await showRecordingControls(region);
       await appWindow.hide();
       await new Promise((resolve) => setTimeout(resolve, 200));
-
-      await invoke("start_video_recording", {
-        saveDir: currentTempDir,
-        region: region ?? null,
-      });
-
-      await showRecordingControls();
+      await startRecordingRef.current(region);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (
@@ -602,7 +647,7 @@ function App() {
       } else {
         setError(errorMessage);
         toast.error("Recording failed", { description: errorMessage, duration: 5000 });
-        await appWindow.hide();
+        await restoreWindow();
       }
       setIsRecording(false);
     }
@@ -639,7 +684,7 @@ function App() {
   }, [isRecording, isCapturing, beginRecording]);
 
   // Called when the user finishes drawing a region in the record-region-select overlay
-  const handleRecordRegionSelected = useCallback(async (region: { x: number; y: number; width: number; height: number }) => {
+  const handleRecordRegionSelected = useCallback(async (region: { x: number; y: number; width: number; height: number; scaleFactor: number }) => {
     setMode("main");
     await beginRecording(region);
   }, [beginRecording]);
@@ -652,43 +697,19 @@ function App() {
 
   // Handle stop requested from the recording controls window
   const handleStopRecording = useCallback(async () => {
-    const { tempDir: currentTempDir } = settingsRef.current;
-
-    try {
-      // Hide recording controls
-      await emitTo("recording-controls", "hide-recording-controls");
-
-      // Stop recording and get the final file
-      const finalPath = await invoke<string>("stop_video_recording", {
-        outputDir: currentTempDir,
-      });
-
-      setIsRecording(false);
-      setRecordingPath(finalPath);
-      setMode("trimming");
-      try {
-        await invoke("move_window_to_active_space");
-      } catch {
-        // ignore
-      }
-      await restoreWindow();
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setIsRecording(false);
-      setError(errorMessage);
-      toast.error("Recording failed", { description: errorMessage, duration: 5000 });
-    }
+    stopRecordingRef.current();
+    // onStop callback in useScreenRecorder handles mode/state transitions
   }, []);
 
   const handleRecordingSave = useCallback((savedPath: string) => {
     setMode("main");
-    setRecordingPath(null);
+    setRecordingBlob(null);
     toast.success("Recording saved", { description: savedPath, duration: 4000 });
   }, []);
 
   const handleRecordingCancel = useCallback(() => {
     setMode("main");
-    setRecordingPath(null);
+    setRecordingBlob(null);
   }, []);
 
   // Setup hotkeys whenever settings change
@@ -763,6 +784,8 @@ function App() {
     let unlisten9: (() => void) | null = null;
     let unlisten10: (() => void) | null = null;
     let unlisten11: (() => void) | null = null;
+    let unlisten12: (() => void) | null = null;
+    let unlisten13: (() => void) | null = null;
     let mounted = true;
 
     const setupListeners = async () => {
@@ -807,6 +830,12 @@ function App() {
       unlisten11 = await listen("recording-stop-requested", () => {
         if (mounted) handleStopRecording();
       });
+      unlisten12 = await listen("recording-pause-request", () => {
+        if (mounted) pauseRecordingRef.current();
+      });
+      unlisten13 = await listen("recording-resume-request", () => {
+        if (mounted) resumeRecordingRef.current();
+      });
       unlisten8 = await listen("show-last-capture-overlay", async () => {
         if (!mounted) return;
         try {
@@ -836,6 +865,8 @@ function App() {
       unlisten9?.();
       unlisten10?.();
       unlisten11?.();
+      unlisten12?.();
+      unlisten13?.();
     };
   }, []); // Empty dependency array - only run once on mount
 
@@ -909,11 +940,13 @@ function App() {
     return defaultShortcut ? formatShortcut(defaultShortcut.shortcut) : "—";
   };
 
-  if (mode === "trimming" && recordingPath) {
+  if (mode === "video-editing" && recordingBlob) {
     return (
       <Suspense fallback={<LoadingFallback />}>
-        <VideoTrimmerLazy
-          videoPath={recordingPath}
+        <VideoEditorLazy
+          blob={recordingBlob}
+          durationMs={recordingDurationMs}
+          region={recordingRegion}
           saveDir={saveDir}
           copyToClipboard={copyToClipboard}
           onSave={handleRecordingSave}
