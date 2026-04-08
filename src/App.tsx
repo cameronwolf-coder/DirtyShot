@@ -107,6 +107,11 @@ async function restoreWindowOnScreen(mouseX?: number, mouseY?: number) {
     await appWindow.center();
   }
 
+  // Re-activate the process before showing — required for LSUIElement (accessory) apps.
+  // macOS deactivates the process when all windows are hidden, so .show() alone brings
+  // the window to the screen but leaves it behind the frontmost app. activate_app calls
+  // NSApp.activate() which promotes the process and lets setFocus() take effect.
+  await invoke("activate_app");
   await appWindow.show();
   await appWindow.setFocus();
 }

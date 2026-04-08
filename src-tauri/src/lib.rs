@@ -36,7 +36,18 @@ fn set_macos_accessory_mode() {
 /// Shows the main application window (creates it if needed, shows if hidden)
 fn show_main_window(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(window) = app.get_webview_window("main") {
-        // Window exists, just show and focus it
+        // Activate the process before showing — required for LSUIElement apps.
+        // Tray clicks auto-activate, but explicit calls from code need this.
+        #[cfg(target_os = "macos")]
+        {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::NSApplication;
+            let _ = window.with_webview(|_webview| {
+                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                let app = NSApplication::sharedApplication(mtm);
+                app.activate();
+            });
+        }
         let _ = window.show();
         let _ = window.set_focus();
     } else {
